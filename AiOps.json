@@ -1,0 +1,214 @@
+{
+  "name": "AiOps RRHH - Correlación, Causa Raíz y Alertas",
+  "nodes": [
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "c72d1381-f871-4bb4-b228-5c1b0b925a80",
+      "name": "Spreadsheet File - Read",
+      "type": "n8n-nodes-base.spreadsheetFile",
+      "typeVersion": 2,
+      "position": [
+        576,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {}
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ed92d181-0205-4eaa-b3ea-d8c7dcfa4d82",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Helpers\nfunction toNumber(v) {\n  if (v === null || v === undefined || v === \"\") return null;\n  if (typeof v === \"number\") return v;\n  const s = String(v).replace(/\\s+/g,'').replace(/,/g,'');\n  const n = Number(s);\n  return Number.isFinite(n) ? n : null;\n}\n\nfunction normalizeRating(v) {\n  const n = toNumber(v);\n  if (n === null) return null;\n  return Math.max(0, Math.min(1, n / 5)); // Si la escala es 0–5\n}\n\nfunction safeStr(v) {\n  return v === null || v === undefined ? \"\" : String(v);\n}\n\n\n// Convertir items a filas reales\nlet rows = [];\nfor (let i = 0; i < items.length; i++) {\n  if (items[i] && items[i].json) rows.push(items[i].json);\n}\n\nif (rows.length === 0) {\n  throw new Error(\"No se encontraron filas en items.\");\n}\n\n\n// ---- Función principal de análisis por empleado ----\nfunction analizarFila(row) {\n  \n  const salario_base   = toNumber(row.salario_base);\n  const bonificaciones = toNumber(row.bonificaciones);\n  const deducciones    = toNumber(row.deducciones);\n  const neto_pagado    = toNumber(row.neto_pagado);\n\n  const calificacion   = toNumber(row.calificacion);\n  const puntualidad    = toNumber(row.puntualidad);\n  const productividad  = toNumber(row.productividad);\n  const trabajo_equipo = toNumber(row.trabajo_equipo);\n  const liderazgo      = toNumber(row.liderazgo);\n\n  const estado_pago    = safeStr(row.estado_pago).toUpperCase();\n  const estado_curso   = safeStr(row.estado).toUpperCase();\n\n\n  // ---- Correlaciones ----\n  const correlaciones = {\n    calif_vs_productividad:\n      (normalizeRating(calificacion) || 0) *\n      (normalizeRating(productividad) || 0),\n\n    calif_vs_liderazgo:\n      (normalizeRating(calificacion) || 0) *\n      (normalizeRating(liderazgo) || 0),\n\n    productividad_vs_bonificaciones:\n      (normalizeRating(productividad) || 0) *\n      ((bonificaciones && salario_base) ? (bonificaciones / salario_base) : 0),\n\n    puntualidad_vs_deducciones:\n      (normalizeRating(puntualidad) || 0) *\n      ((deducciones && salario_base) ? (deducciones / salario_base) : 0)\n  };\n\n\n  // ---- Causas raíz ----\n  const causas = [];\n\n  if (productividad < 4 && puntualidad < 4) {\n    causas.push(\"Bajo rendimiento: posible falta de competencias o seguimiento.\");\n  }\n\n  if (neto_pagado < salario_base * 0.85) {\n    causas.push(\"Deducciones altas reducen el neto pagado.\");\n  }\n\n  if (liderazgo > 4.5 && (bonificaciones < salario_base * 0.05)) {\n    causas.push(\"Alto liderazgo con baja compensación.\");\n  }\n\n  if (estado_curso === \"EN_CURSO\" && productividad < 4) {\n    causas.push(\"Empleado en formación con rendimiento bajo.\");\n  }\n\n  if (estado_pago !== \"PAGADO\") {\n    causas.push(\"Pago no completado o retrasado.\");\n  }\n\n\n  // ---- Alertas y riesgo ----\n  let alertas = [];\n  let riskScore = 0;\n\n\n  const rendimientoComp = (() => {\n    const p = productividad ? productividad / 5 : 0.5;\n    const pu = puntualidad ? puntualidad / 5 : 0.5;\n    return (p * 0.7 + pu * 0.3);\n  })();\n\n  const financieroComp = (() => {\n    if (estado_pago !== \"PAGADO\") return 0.2;\n    if (neto_pagado && salario_base) {\n      const ratio = neto_pagado / salario_base;\n      if (ratio < 0.85) return 0.4;\n      if (ratio < 0.95) return 0.8;\n      return 1;\n    }\n    return 1;\n  })();\n\n  riskScore = Math.round(((1 - rendimientoComp) * 0.6 + (1 - financieroComp) * 0.4) * 100);\n\n\n  // Clasificar alertas\n  if (riskScore >= 70) {\n    alertas.push({ nivel: \"critical\", mensaje: \"Riesgo alto.\" });\n  } else if (riskScore >= 40) {\n    alertas.push({ nivel: \"warning\", mensaje: \"Riesgo moderado.\" });\n  } else {\n    alertas.push({ nivel: \"info\", mensaje: \"Riesgo bajo.\" });\n  }\n\n\n  // ---- Resultado final por empleado ----\n  return {\n    empleado_id: safeStr(row.empleado_id),\n    periodo_pago: safeStr(row.periodo_pago),\n    salario_base,\n    bonificaciones,\n    deducciones,\n    neto_pagado,\n    estado_pago,\n    curso_id: safeStr(row.curso_id),\n    nombre_curso: safeStr(row.nombre_curso),\n    calificacion,\n    puntualidad,\n    productividad,\n    trabajo_equipo,\n    liderazgo,\n    comentarios: safeStr(row.comentarios),\n    correlaciones,\n    causas,\n    alertas,\n    riskScore\n  };\n}\n\n\n\n// ---- Procesar todas las filas ----\nconst resultados = rows.map(r => analizarFila(r));\n\n\n// ---- Agrupamiento por riesgo ----\nconst agrupado = {\n  riesgo_critico: resultados.filter(r => r.riskScore >= 70),\n  riesgo_moderado: resultados.filter(r => r.riskScore >= 40 && r.riskScore < 70),\n  riesgo_bajo: resultados.filter(r => r.riskScore < 40)\n};\n\n\n// ---- Devolver JSON limpio ----\nreturn [\n  {\n    json: {\n      data: agrupado\n    }\n  }\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        848,
+        0
+      ],
+      "id": "8e0ca753-6294-4cbe-bee0-8173742ee1d4",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": {
+          "__rl": true,
+          "value": "1H5tbFQrfldhmR29evad_848pD1oyLbxrUjFXTeKwCaI",
+          "mode": "list",
+          "cachedResultName": "SistemaRecursosHumanos",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1H5tbFQrfldhmR29evad_848pD1oyLbxrUjFXTeKwCaI/edit?usp=drivesdk"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        288,
+        0
+      ],
+      "id": "ef9c955e-fac2-433c-b0a9-0bed1b8adf24",
+      "name": "Download file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "WIKezJfatSQOMQf1",
+          "name": "Google Drive account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Aquí tienes los datos ya procesados y agrupados por niveles de riesgo. Analízalos y dame insights accionables:\n\n- Patrones por grupo de riesgo\n- Causas comunes dentro de cada nivel\n- Recomendaciones para intervención\n- Métricas o relaciones destacables\n- Sugerencias de mejora para el siguiente ciclo de evaluación\n- Lista de empleados en cada Riesgo\n\nEste es el JSON:\n{{ $json.data }}",
+        "options": {
+          "systemMessage": "Eres un analista experto en recursos humanos y comportamiento organizacional. Recibirás un JSON con tres grupos de empleados: riesgo_critico, riesgo_moderado y riesgo_bajo. Cada empleado incluye correlaciones de desempeño, causas raíz, alertas tempranas y un puntaje de riesgo.\n\nTu objetivo es:\n- Analizar los patrones dentro de cada grupo.\n- Explicar causas raíz comunes.\n- Identificar comportamientos claves que impulsan el riesgo.\n- Recomendar acciones concretas para cada grupo.\n- Señalar anomalías o datos inusuales.\n- Proponer estrategias de retención, capacitación o intervención.\n- Enviar un correo por cada riesgo incluyendo a la lista de empleados en cada una. Se hace en formato HTML igual para todos los correos\n\nNo resumas los datos, analízalos. Tu análisis debe ser claro, contextual y orientado a toma de decisiones.\n\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "position": [
+        1056,
+        0
+      ],
+      "id": "509251d1-ae79-4429-80d1-e14fa56fa8bc",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        944,
+        240
+      ],
+      "id": "9597b3a3-54f6-491d-a7ba-d22c52e0f732",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "DgWxjgIGOnlvjpqL",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "edwinalejandropte@gmail.com",
+        "subject": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Subject', ``, 'string') }}",
+        "message": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Message', ``, 'string') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmailTool",
+      "typeVersion": 2.1,
+      "position": [
+        1264,
+        256
+      ],
+      "id": "0fea92f1-fa51-4041-8ddc-1d18cc1b0423",
+      "name": "Gmail",
+      "webhookId": "22c4fb43-a87a-4dee-bd54-73c7df4665df",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "OUAxIF6hR19JQgOE",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Spreadsheet File - Read": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Download file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download file": {
+      "main": [
+        [
+          {
+            "node": "Spreadsheet File - Read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gmail": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "4f322168-88ef-4c90-98cf-4cbc407dc3da",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "5e045bee401e1c69d8797e70d399191899057bde871de54f728c9c912e4a59e3"
+  },
+  "id": "zxwvgrqUMoqdmEGK",
+  "tags": []
+}
